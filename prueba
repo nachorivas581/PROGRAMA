@@ -1,7 +1,7 @@
 sleep 3 ;echo -e "\e[7mQue deseas hacer?\e[0m"
            select yn in "AGREGAR PACIENTES" "VER LISTA PACIENTES" SIGUIENTE ; do
              case $yn in
-                   "AGREGAR PACIENTES") bash ListaPacientes |tee -a ;  bash prueba ;break ;;
+                   "AGREGAR PACIENTES") bash ListaPacientes |tee -a ListaPacientes.txt ;  bash prueba ;break ;;
                    "VER LISTA PACIENTES") bash ListaPacientes.txt ; exit;;
                     SIGUIENTE) clear ;sleep 3 ;echo -e "\e[7mQue deseas hacer?\e[0m"
                        select yn in "DAR TURNOS" "MODIFICAR TURNOS" "VER TURNOS" ; do
