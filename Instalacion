@@ -1,0 +1,6 @@
+#!/bin/bash
+sleep 1 ; echo Comenzara la instalacion del programa
+sleep 1 ; echo "Instalaremos Todo lo necesario, Se paciente!"
+sleep 3 ; apt-get update -y ; apt-get upgrade -y
+sleep 2 ; echo Espera un momento..
+
