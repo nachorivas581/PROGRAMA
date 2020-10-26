@@ -1,0 +1,128 @@
+#!/bin/bash
+echo -e "\e[32mNombre Y Apellido del paciente:\e[0m"
+read Nombre
+echo "
+$Nombre
+-----------------------------------"
+echo -e "\e[32mNumero de DNI:\e[0m"
+read DNI
+echo "
+$DNI
+----------------------------------"
+echo -e "\e[32mDireccion:\e[0m"
+read Direccion
+echo "
+$Direccion
+-----------------------------------"
+echo -e "\e[32mObra Social:\e[0m"
+read social
+echo "
+$social
+-----------------------------------"
+echo -e "\e[32mTelefono De Emergencias\e[0m"
+read Emergencias
+echo "
+$Emergencias
+-----------------------------------" 
+echo -e "\e[32mFecha De Nacimiento:\e[0m"
+read Nacimiento
+echo "
+$Nacimiento
+-----------------------------------"
+echo -e "\e[32mFecha de P.A:\e[0m"
+read Fecha 
+echo "
+$Fecha
+-----------------------------------"
+echo -e "\e[32mOcupacion\e[0m"
+read Ocupacion
+echo "
+$Ocupacion
+-----------------------------------"
+echo -e "\e[32mDerivado Por:\e[0m"
+read Derivado
+echo " 
+$Derivado
+-----------------------------------"
+echo -e "\e[32mEnfermedades que padece\e[0m"
+echo -e "\e[96mElija una o mas y escribalas
+\e[0m"
+echo -e "\e[91m|DM|ARTRITIS|ARTROSIS|ANTICUAGULADO|PSORIASIS|
+|VITILIGO|HIPERT.|ENF.TRAN.SEX| HIPERTIROIDISMO|
+|HIPOTIROIDISIMO|NINGUNA|\e[0m"
+read padece
+echo " Actualmente:$padece
+-----------------------------------"
+echo -e "\e[32mEsta bajo tratamiento Medico?\e[0m"
+read tratamiento
+echo "
+$tratamiento
+-----------------------------------"
+echo -e "\e[32mQue medicamento toma?\e[0m"
+read medicamento
+echo "
+$medicamento
+-----------------------------------"
+ echo -e "\e[32mQuien es su medico de cabecera?\e[0m"
+read medico
+echo "
+$medico
+-----------------------------------"
+echo -e "\e[32mEs alergico a alguna medicacion?\e[0m"
+read alergico
+echo "
+$alergico
+-----------------------------------"
+echo -e "\e[32mEstilo de vida - Habitos y Vicios.\e[0m"
+read vida
+echo "
+$vida
+-----------------------------------"
+echo -e "\e[32mAntecedentes de interes podologicos.\e[0m"
+echo -e "\e[91m(Operado de MI-Melanoma-Occ-Onicomicosis- Tratamientos en el pasado-Podologo anterior-etc)\e[0m"
+read  Antecedentes
+echo "
+$Antecedentes
+-----------------------------------"
+echo -e "\e[100mVALORACION DEL PIE\e[0m"
+echo -e "\e[32mPulso Pedio \e[0m"
+echo -e "\e[34mPD - PI  \e[0m"
+read Pedio
+echo $Pedio
+
+echo -e "\e[32mPulso Tibial \e[0m"
+echo -e "\e[34m PD - PI \e[0m"
+read  Tibial
+echo $Tibial
+
+echo -e "\e[32mPIE \e[0m"
+echo -e "\e[34mCaliente -Frio  \e[0m"
+read PIE
+echo $PIE
+
+echo -e "\e[32mColor\e[0m"
+echo -e "\e[34mCianotico - Normal -Palido  \e[0m"
+read Color
+echo $Color
+
+echo -e "\e[32mPiel\e[0m"
+echo -e "\e[34mNormal - Seca - Humeda  \e[0m"
+read Piel
+echo $Piel
+
+echo -e "\e[32mSensibilidad\e[0m"
+echo -e "\e[34mNormal - Media - Baja -Nula  \e[0m"
+read Sensibilidad
+echo $Sensibilidad
+
+echo -e "\e[32mCalzado\e[0m"
+echo -e "\e[34mBueno - Regular - Malo  \e[0m"
+read Calzado
+echo $Calzado
+
+echo -e "\e[32mHigiene\e[0m"
+echo -e "\e[34mBuena - Regular - Mala - Muy Mala  \e[0m"
+read Higiene
+echo " $Higiene
+--------------------------------------------"
+
