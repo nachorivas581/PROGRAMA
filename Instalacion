@@ -5,7 +5,7 @@ sleep 3 ; apt-get update -y ; apt-get upgrade -y
 sleep 2 ; echo Espera un momento...
 sleep 3; Descargando Pacientes
 sleep 2 ; wget https://raw.githubusercontent.com/nachorivas581/PROGRAMA/main/ListaPacientes
-sleep2 ;
+sleep 2 ; wget https://raw.githubusercontent.com/nachorivas581/PROGRAMA/main/ListaPacientes.txt
 sleep 5 ; echo CORRECTO!
 sleep 2 ;"Simplificaremos tu trabajo se paciente :) "
 sleep 2 ; echo Descargando TURNOS
