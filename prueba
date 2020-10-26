@@ -1,14 +1,14 @@
 sleep 3 ;echo -e "\e[7mQue deseas hacer?\e[0m"
            select yn in "AGREGAR PACIENTES" "VER LISTA PACIENTES" SIGUIENTE ; do
              case $yn in
-                   "AGREGAR PACIENTES") nano ListaPacientes ;  bash prueba ;break ;;
-                   "VER LISTA PACIENTES") bash ListaPacientes ; exit;;
+                   "AGREGAR PACIENTES") bash ListaPacientes |tee -a ;  bash prueba ;break ;;
+                   "VER LISTA PACIENTES") bash ListaPacientes.txt ; exit;;
                     SIGUIENTE) clear ;sleep 3 ;echo -e "\e[7mQue deseas hacer?\e[0m"
                        select yn in "DAR TURNOS" "MODIFICAR TURNOS" "VER TURNOS" ; do
                         case $yn in
-                   "DAR TURNOS") nano TURNOS ; bash prueba ;;
-                   "MODIFICAR TURNOS") nano TURNOS ; bash prueba;;
-                    "VER TURNOS") bash TURNOS ; exit ;;
+                   "DAR TURNOS") bash TURNOS |tee -a TURNOS.txt; bash prueba ;;
+                   "MODIFICAR TURNOS") nano TURNOS.txt ; bash prueba;;
+                    "VER TURNOS") bash TURNOS.txt ; exit ;;
                    esac
                    done
                    esac
