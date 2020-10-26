@@ -1,11 +1,16 @@
 sleep 3 ;echo -e "\e[7mQue deseas hacer?\e[0m"
-           select yn in "AGREGAR PACIENTE" "VER PLANILLA PACIENTES" " DAR TURNOS" "MODIFICAR TURNOS" " VER TURNOS" "SALIR"  ; do
+           select yn in "AGREGAR PACIENTES" "VER LISTA PACIENTES" SIGUIENTE ; do
              case $yn in
                    "AGREGAR PACIENTES") nano ListaPacientes ; break ;;
-                   "VER PLANILLA PACIENTES") bash ListaPacientes ;
-                   "DAR TURNOS") nano TURNOS ;
-                   "MODIFICAR TURNOS") nano TURNOS ;
-                   "VER TURNOS") bash TURNOS ;
-                   SALIR) exit ;;
+                   "VER LISTA PACIENTES") bash ListaPacientes ; exit;;
+                    SIGUIENTE) select yn in "DAR TURNOS" "MODIFICAR TURNOS" "VER TURNOS" ; do
+                        case $yn in
+                   "DAR TURNOS") nano TURNOS ; exit ;;
+                   "MODIFICAR TURNOS") nano TURNOS ; exit;;
+                    "VER TURNOS") bash TURNOS ; exit ;;
                    esac
                    done
+                   esac
+                   done
+
+
