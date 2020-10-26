@@ -2,5 +2,10 @@
 sleep 1 ; echo Comenzara la instalacion del programa
 sleep 1 ; echo "Instalaremos Todo lo necesario, Se paciente!"
 sleep 3 ; apt-get update -y ; apt-get upgrade -y
-sleep 2 ; echo Espera un momento..
+sleep 2 ; echo Espera un momento...
+sleep 3; Descargando Programa...
+sleep 2 ; wget https://raw.githubusercontent.com/nachorivas581/PROGRAMA/main/ListaPacientes
+
+sleep 5 ; echo CORRECTO!
+sleep 2 ;"Simplificaremos tu trabajo se paciente :) "
 
