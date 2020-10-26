@@ -1,0 +1,4 @@
+sleep 3 ;echo -e "\e[7mQue deseas hacer?\e[0m"
+           select yn in "AGREGAR PACIENTE" "VER PLANILLA PACIENTES" "TURNOS" "SALIR" ; do
+             case $yn in
+                   AGREGAR PACIENTES) nano Listapacientes
