@@ -1,0 +1,1054 @@
+<?php
+session_start();
+require 'config.php';
+
+// Si no hay sesión activa, mandarlo al login
+if (!isset($_SESSION['user_id'])) {
+    header("Location: bienvenida.php");
+    exit();
+}
+
+$id_cliente = $_SESSION['user_id'];
+$rol = $_SESSION['rol'] ?? 'cliente';
+$esPro = ($rol === 'pro');
+$nombreUser = $_SESSION['nombre'];
+
+// Validación inteligente para la foto (URL de Google vs Archivo Local)
+if (!empty($_SESSION['foto'])) {
+    if (strpos($_SESSION['foto'], 'http') === 0) {
+        $fotoPerfil = $_SESSION['foto'];
+    } else {
+        $fotoPerfil = 'uploads/' . $_SESSION['foto'];
+    }
+} else {
+    $fotoPerfil = 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
+}
+
+$whatsappUser = $_SESSION['whatsapp'] ?? '';
+
+// =======================================================
+// TRAER CONFIGURACIÓN DE PAGOS DESDE ADMIN
+// =======================================================
+try {
+    $config_app = $pdo->query("SELECT pago_efectivo, pago_mercadopago FROM configuracion LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+    $pago_efectivo_activo = $config_app ? (int)$config_app['pago_efectivo'] : 0;
+    $pago_mp_activo = $config_app ? (int)$config_app['pago_mercadopago'] : 1;
+} catch (PDOException $e) {
+    $pago_efectivo_activo = 0;
+    $pago_mp_activo = 1;
+}
+
+// =======================================================
+// CARGAR RUBROS DINÁMICOS DESDE LA BASE DE DATOS
+// =======================================================
+$rubros_db = [];
+try {
+    $stmt_rubros = $pdo->query("SELECT nombre FROM rubros ORDER BY nombre ASC");
+    $rubros_db = $stmt_rubros->fetchAll(PDO::FETCH_COLUMN);
+} catch (PDOException $e) {
+    $rubros_db = ['Plomería', 'Electricidad', 'Jardinería', 'Cerrajería'];
+}
+
+$iconos_rubros = [
+    'Albañil' => '🧱', 'Electricista' => '⚡', 'Jardinería / Desmalezamiento' => '🌳',
+    'Plomero' => '🚰', 'Podador' => '🪚', 'Refrigeración' => '❄️', "Computacion" => '💻',
+    'Cadetería / Mensajería' => '🛵', 'Carpintero' => '🔨', 'Cerrajero' => '🔑',
+    'Construcción en Seco / Durlock' => '🏗️', 'Fletes y Mudanzas' => '🚚',
+    'Fumigación / Control de Plagas' => '🐜', 'Gasista Matriculado' => '🔥',
+    'Herrero' => '⚒️', 'Instalador de Aires Acondicionados' => '❄️',
+    'Instalador de Alarmas y Cámaras' => '📹', 'Limpieza y Maestranza' => '🧹',
+    'Pintor' => '🎨', 'Piletero / Mantenimiento de Piscinas' => '🏊‍♂️',
+    'Reparación de Electrodomésticos' => '🔌', 'Reparación de Lavarropas' => '🧺',
+    'Tapicero' => '🪑', 'Vidriero' => '🪟','Mecanico' => '🚙',
+];
+
+// =======================================================
+// PLAN B: ATRAPAR EL RETORNO DE MERCADO PAGO
+// =======================================================
+if (isset($_GET['status']) && isset($_GET['external_reference'])) {
+    $status = $_GET['status'];
+    $pedido_id = $_GET['external_reference'];
+    $payment_id = $_GET['payment_id'] ?? ($_GET['collection_id'] ?? '0');
+
+    if ($status === 'approved') {
+        $stmt = $pdo->prepare("UPDATE solicitudes SET estado = 'en_curso', transaccion_cliente = ? WHERE id = ? AND estado = 'pendiente_pago'");
+        $stmt->execute([$payment_id, $pedido_id]);
+        header("Location: index.php?msg=pago_aprobado"); exit();
+    } elseif ($status === 'in_process' || $status === 'pending') {
+        $stmt = $pdo->prepare("UPDATE solicitudes SET estado = 'en_curso', transaccion_cliente = ? WHERE id = ? AND estado = 'pendiente_pago'");
+        $stmt->execute([$payment_id . '_PENDING', $pedido_id]);
+        header("Location: index.php?msg=pago_pendiente"); exit();
+    } elseif ($status === 'rejected' || $status === 'null') {
+        header("Location: index.php?msg=pago_rechazado"); exit();
+    }
+}
+?>
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ServiMap Plus - Cliente</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#ffffff">
+    <link rel="apple-touch-icon" href="icon-192.png">
+
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+
+    <style>
+        :root { --brand-blue: #000000; --brand-dark: #121212; --glass-bg: rgba(255, 255, 255, 0.95); --glass-blur: blur(20px); --shadow-soft: 0 4px 20px rgba(0,0,0,0.08); --shadow-hard: 0 -10px 40px rgba(0,0,0,0.12); }
+        body, html { height: 100%; margin: 0; font-family: 'Inter', sans-serif; background-color: #f8f9fa; overflow: hidden; overscroll-behavior-y: none; -webkit-tap-highlight-color: transparent; }
+        #mapa { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        .leaflet-control-attribution, .leaflet-control-zoom { display: none; }
+        .top-ui-layer { position: absolute; top: 0; left: 0; width: 100%; z-index: 1000; padding: 15px; display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none; }
+        .top-ui-layer * { pointer-events: auto; }
+        .btn-menu-flotante { width: 50px; height: 50px; background: white; border-radius: 50%; display: flex; justify-content: center; align-items: center; box-shadow: var(--shadow-soft); cursor: pointer; border: none; color: var(--brand-dark); transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .btn-menu-flotante:active { transform: scale(0.85); background-color: #f1f3f5; }
+        .btn-menu-flotante.active-alert { color: white; background: var(--brand-dark); animation: pulseAlert 1.5s infinite; }
+        @keyframes pulseAlert { 0% { box-shadow: 0 0 0 0 rgba(18, 18, 18, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(18, 18, 18, 0); } 100% { box-shadow: 0 0 0 0 rgba(18, 18, 18, 0); } }
+        .profile-trigger { width: 50px; height: 50px; border-radius: 50%; background-size: cover; background-position: center; cursor: pointer; border: 3px solid white; box-shadow: var(--shadow-soft); transition: transform 0.2s; }
+        .profile-trigger:active { transform: scale(0.85); }
+        .bottom-ui-layer { position: absolute; bottom: 0; left: 0; width: 100%; z-index: 1000; padding: 15px; pointer-events: none; display: flex; flex-direction: column; justify-content: flex-end; padding-bottom: env(safe-area-inset-bottom, 20px); }
+        .bottom-ui-layer * { pointer-events: auto; }
+        .floating-bottom-card { background: white; border-radius: 28px; box-shadow: var(--shadow-hard); padding: 24px; width: 100%; max-width: 500px; margin: 0 auto; transition: 0.3s ease; border: 1px solid rgba(0,0,0,0.05); }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .carrusel-rubros { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 15px; scroll-behavior: smooth; }
+        .cat-item { display: flex; flex-direction: column; align-items: center; min-width: 85px; cursor: pointer; transition: 0.2s; }
+        .cat-item:active { transform: scale(0.92); }
+        .cat-icon-box { width: 65px; height: 65px; background: #f8f9fa; border-radius: 20px; display: flex; justify-content: center; align-items: center; font-size: 28px; margin-bottom: 8px; transition: 0.3s ease; border: 1px solid #eee; }
+        .cat-item.active .cat-icon-box { background: var(--brand-dark); color: white; border-color: var(--brand-dark); box-shadow: 0 8px 15px rgba(0,0,0,0.2); transform: translateY(-3px); }
+        .cat-item span { font-size: 13px; font-weight: 600; color: #6c757d; transition: 0.3s; }
+        .cat-item.active span { color: var(--brand-dark); font-weight: 800; }
+        .pro-marker-container { position: relative; width: 50px; height: 50px; cursor: pointer; transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        .pro-marker-container:hover, .pro-marker-container:active { transform: scale(1.05); }
+        .pro-pulse { position: absolute; top: 50%; left: 50%; width: 100%; height: 100%; background-color: var(--brand-dark); border-radius: 50%; transform: translate(-50%, -50%); z-index: 1; opacity: 0; animation: uberPulse 2.5s infinite ease-out; }
+        @keyframes uberPulse { 0% { transform: translate(-50%, -50%) scale(1); opacity: 0.3; } 100% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; } }
+        .pro-avatar { width: 100%; height: 100%; border-radius: 50%; background-color: #fff; background-size: cover; background-position: center; border: 2.5px solid var(--brand-dark); box-shadow: 0 6px 15px rgba(0,0,0,0.25); position: relative; z-index: 2; }
+        .pro-online-dot { position: absolute; bottom: 0px; right: 0px; width: 14px; height: 14px; background-color: #05a357; border: 2px solid #fff; border-radius: 50%; z-index: 3; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .pro-shield { position: absolute; top: -4px; right: -4px; background: var(--brand-dark); color: white; border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 10px; z-index: 4; border: 2px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        .gps-pulse { width: 22px; height: 22px; background: var(--brand-dark); border-radius: 50%; border: 4px solid white; box-shadow: 0 0 15px rgba(0,0,0,0.4); position: relative; }
+        .gps-pulse::after { content: ''; position: absolute; top: -20px; left: -20px; width: 60px; height: 60px; border: 2px solid var(--brand-dark); border-radius: 50%; animation: radarPulse 2s infinite; opacity: 0.6; }
+        @keyframes radarPulse { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
+        .modal-content { border-radius: 36px; border: none; box-shadow: 0 25px 60px rgba(0,0,0,0.2); }
+        .form-control, .form-select { border-radius: 20px; padding: 16px 20px; border: 1px solid #e9ecef; background-color: #f8f9fa; font-weight: 600; font-size: 1rem; transition: 0.2s; }
+        .form-control:focus, .form-select:focus { box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.08); border-color: var(--brand-dark); background-color: #fff; }
+        .btn-primary { background-color: var(--brand-dark); border: none; font-weight: 800; border-radius: 20px; transition: 0.2s; box-shadow: 0 8px 20px rgba(0,0,0,0.15); }
+        .btn-primary:active, .btn-primary:hover { background-color: #212529; transform: scale(0.96); box-shadow: none; }
+        .btn-payment { background: #ffffff; border: 2px solid #f1f3f5; border-radius: 24px; padding: 20px; display: flex; align-items: center; justify-content: space-between; transition: 0.2s; width: 100%; margin-bottom: 14px; text-align: left; position: relative; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.02); }
+        .btn-payment:active { transform: scale(0.96); background: #f8f9fa; border-color: #dee2e6; }
+        .custom-drawer { border-radius: 0 36px 36px 0; border: none; max-width: 85vw; box-shadow: 10px 0 30px rgba(0,0,0,0.1); }
+        .menu-link { display: flex; align-items: center; padding: 18px 22px; color: var(--brand-dark); text-decoration: none; font-weight: 700; border-radius: 20px; transition: 0.2s; cursor: pointer; margin-bottom: 8px; }
+        .menu-link i { font-size: 24px; width: 40px; }
+        .menu-link:active { background-color: #f1f3f5; transform: scale(0.96); }
+    </style>
+</head>
+<body>
+
+<audio id="notif-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3"></audio>
+<div id="mapa"></div>
+
+<div class="top-ui-layer">
+    <button id="btn-notificaciones" class="btn-menu-flotante" onclick="solicitarPermisosPush()">
+        <i class="bi bi-bell-fill"></i>
+    </button>
+    <div class="profile-trigger ms-auto" style="background-image:url('<?= $fotoPerfil ?>');" data-bs-toggle="offcanvas" data-bs-target="#menuLateral"></div>
+</div>
+
+<div class="bottom-ui-layer">
+    <div id="mis-pedidos-container" class="w-100 mx-auto" style="max-width: 500px;"></div>
+    <div class="floating-bottom-card" id="main-request-ui">
+        <h4 class="fw-bolder mb-3 text-dark text-center" style="font-family:'Montserrat', sans-serif;">¿Qué precisás hoy?</h4>
+       <div class="carrusel-rubros hide-scrollbar" id="carrusel-rubros">
+            <div class="cat-item active" onclick="filtrarRubro('Todos', this)">
+                <div class="cat-icon-box">📍</div>
+                <span>General</span>
+            </div>
+
+            <?php foreach($rubros_db as $rubro_nombre):
+                $icono = $iconos_rubros[$rubro_nombre] ?? '🛠️';
+            ?>
+            <div class="cat-item" onclick="filtrarRubro('<?= htmlspecialchars($rubro_nombre) ?>', this)">
+                <div class="cat-icon-box"><?= $icono ?></div>
+                <span><?= htmlspecialchars($rubro_nombre) ?></span>
+            </div>
+            <?php endforeach; ?>
+        </div>
+        <button class="btn btn-primary w-100 py-3 mt-3 d-flex justify-content-center align-items-center gap-2" style="font-size: 1.1rem;" data-bs-toggle="modal" data-bs-target="#modalAyuda">
+            <span id="btn-pedir-texto">BUSCAR PROFESIONAL</span> <i class="bi bi-arrow-right fs-5"></i>
+        </button>
+    </div>
+</div>
+
+<div class="offcanvas offcanvas-start custom-drawer" tabindex="-1" id="menuLateral">
+    <div class="offcanvas-header pb-0 border-0 mt-2">
+        <button type="button" class="btn-close fs-4" data-bs-dismiss="offcanvas"></button>    </div>
+    <div class="offcanvas-body d-flex flex-column px-4">
+        <div class="text-center mb-4 pt-2">
+            <div style="width:100px; height:100px; border-radius:35px; background-image:url('<?= $fotoPerfil ?>'); background-size:cover; margin: 0 auto 12px auto; border: 4px solid #fff; box-shadow: 0 10px 25px rgba(0,0,0,0.15);"></div>
+            <h3 class="fw-bolder mb-0 text-dark" style="font-family:'Montserrat', sans-serif;"><?= $nombreUser ?></h3>
+            <span class="badge bg-dark mt-2 rounded-pill px-4 py-2 shadow-sm">Cliente</span>
+        </div>
+        <div class="flex-grow-1 mt-2">
+            <a class="menu-link" data-bs-toggle="modal" data-bs-target="#modalMiPerfil" data-bs-dismiss="offcanvas">
+                <i class="bi bi-person-circle text-secondary"></i> Mi Cuenta
+            </a>
+            <a class="menu-link" data-bs-toggle="modal" data-bs-target="#modalHistorial" data-bs-dismiss="offcanvas" onclick="cargarHistorial()">
+                <i class="bi bi-clock-history text-secondary"></i> Mis Pedidos
+            </a>
+            <a class="menu-link" data-bs-toggle="modal" data-bs-target="#modalMisTickets" data-bs-dismiss="offcanvas" onclick="cargarTickets()">
+                <i class="bi bi-ticket-detailed-fill text-info"></i> Mis Reclamos
+            </a>
+            <a class="menu-link" data-bs-toggle="modal" data-bs-target="#modalSoporte" data-bs-dismiss="offcanvas">
+                <i class="bi bi-headset text-success"></i> Centro de Ayuda
+            </a>
+            <a class="menu-link mt-4 bg-danger bg-opacity-10 text-danger border border-danger border-opacity-25" data-bs-toggle="modal" data-bs-target="#modalReportarProblema" data-bs-dismiss="offcanvas">
+                <i class="bi bi-exclamation-triangle-fill text-danger"></i> Reportar Problema
+            </a>
+        </div>
+        <div class="mt-auto pt-3 border-top pb-3">
+            <a href="logout.php" class="menu-link text-muted mb-0"><i class="bi bi-box-arrow-right text-muted"></i> Cerrar Sesión</a>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalAyuda" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered mx-3">
+        <form id="formSolicitud" class="modal-content">
+            <div class="modal-header border-0 pb-0 pt-4 px-4">
+                <h3 class="fw-bolder modal-title" style="font-family:'Montserrat', sans-serif;">Detalles</h3>
+                <button type="button" class="btn-close fs-5" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-4">
+                <input type="hidden" id="sol_nombre" value="<?= $nombreUser ?>">
+                <input type="hidden" id="sol_whatsapp" value="<?= $whatsappUser ?>">
+                <input type="hidden" id="id_usuario_logueado" value="<?php echo $_SESSION['id_usuario']; ?>">
+
+                <label class="form-label fw-bold small text-muted ms-1 mb-2">Categoría</label>
+                <select id="sol_rubro" class="form-select mb-4" required>
+                    <option value="" disabled selected>Selecciona una categoría...</option>
+                    <?php foreach($rubros_db as $rubro_nombre):
+                        $icono = $iconos_rubros[$rubro_nombre] ?? '🛠️';
+                    ?>
+                        <option value="<?= htmlspecialchars($rubro_nombre) ?>"><?= $icono ?> <?= htmlspecialchars($rubro_nombre) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <label class="form-label fw-bold small text-muted ms-1 mb-2">¿Qué necesitas que arreglen?</label>
+                <textarea id="sol_problema" class="form-control mb-4" rows="4" placeholder="Ej: Necesito arreglar una pérdida de agua en el baño..." required></textarea>
+
+                <div class="bg-light p-3 rounded-4 mb-4 border d-flex align-items-center gap-3">
+                    <div class="bg-dark rounded-circle d-flex justify-content-center align-items-center shadow-sm" style="width: 45px; height: 45px;"><i class="bi bi-geo-alt-fill text-white"></i></div>
+                    <div>
+                        <small class="d-block text-muted fw-bold" style="font-size: 11px; letter-spacing: 1px;">UBICACIÓN EXACTA</small>
+                        <span class="fw-bolder text-dark" style="font-size: 14px;">Coordenadas GPS actuales</span>
+                    </div>
+                </div>
+
+                <button type="submit" id="btnEnviar" class="btn btn-primary w-100 py-3 fs-6">SOLICITAR AHORA</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="modalMetodoPago" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered mx-3 modal-dialog-scrollable">
+        <div class="modal-content border-0 p-4">
+            <div class="text-center mb-4">
+                <h3 class="fw-bolder mb-1" id="titulo-modal-pago" style="font-family:'Montserrat', sans-serif;">Pago de Visita</h3>
+                <div id="alerta-pago" class="alert alert-warning py-2 px-3 mt-2 mb-0 rounded-3 border-warning text-start shadow-sm" style="font-size: 0.85rem;">
+                    <i class="bi bi-exclamation-triangle-fill text-warning me-1"></i> <strong>Importante:</strong> Estás abonando <u>solamente el costo de la visita</u> del profesional al domicilio.
+                </div>
+            </div>
+
+            <input type="hidden" id="pago_pedido_id">
+            <input type="hidden" id="pago_profesional_id">
+            <input type="hidden" id="pago_cotizacion_id">
+
+            <?php if($pago_mp_activo): ?>
+                <button class="btn-payment border-info border-2 position-relative mt-3 w-100" onclick="ejecutarPago('mercadopago')" style="padding: 15px; border-radius: 12px; background: white;">
+                    <span class="badge bg-info text-dark position-absolute top-0 start-50 translate-middle rounded-pill fw-bold px-3 py-1" style="font-size: 10px; letter-spacing: 1px; z-index: 10;">RECOMENDADO</span>
+                    <div class="d-flex align-items-center gap-3 w-100 mt-1">
+                        <div class="bg-info bg-opacity-10 text-info rounded-circle d-flex justify-content-center align-items-center" style="width: 50px; height: 50px; min-width: 50px;"><i class="bi bi-wallet2 fs-4"></i></div>
+                        <div class="text-start flex-grow-1">
+                            <h6 class="fw-bold mb-0 text-dark">Mercado Pago</h6>
+                            <small class="text-muted fw-medium" style="font-size: 12px;">Tarjetas, Débito o Transferencia</small>
+                        </div>
+                        <h5 id="lbl_precio_mp" class="fw-bolder text-info mb-0"></h5>
+                    </div>
+                </button>
+            <?php else: ?>
+                <button class="btn-payment opacity-75 bg-light mt-3 w-100" onclick="mostrarAlerta('Deshabilitado', 'Mercado Pago está en mantenimiento. Usá otro método.', 'warning')">
+                    <div class="d-flex align-items-center gap-3 w-100">
+                        <div class="bg-secondary bg-opacity-10 text-secondary rounded-circle d-flex justify-content-center align-items-center" style="width: 50px; height: 50px;"><i class="bi bi-credit-card fs-4"></i></div>
+                        <div class="text-start flex-grow-1">
+                            <h6 class="fw-bold mb-0 text-secondary">Mercado Pago <span class="badge bg-danger ms-1" style="font-size: 9px;">PAUSADO</span></h6>
+                            <small class="text-muted fw-medium" style="font-size: 12px;">Mantenimiento temporal</small>
+                        </div>
+                    </div>
+                </button>
+            <?php endif; ?>
+
+            <?php if($pago_efectivo_activo): ?>
+                <button class="btn-payment border-success border-2 mt-3 w-100" onclick="ejecutarPago('efectivo')" style="padding: 15px; border-radius: 12px; background: white;">
+                    <div class="d-flex align-items-center gap-3 w-100">
+                        <div class="bg-success bg-opacity-10 text-success rounded-circle d-flex justify-content-center align-items-center" style="width: 50px; height: 50px; min-width: 50px;"><i class="bi bi-cash-stack fs-4"></i></div>
+                        <div class="text-start flex-grow-1">
+                            <h6 class="fw-bold mb-0 text-dark">Efectivo</h6>
+                            <small class="text-muted fw-medium" style="font-size: 12px;">Pago en persona</small>
+                        </div>
+                        <h5 id="lbl_precio_efectivo" class="fw-bolder text-success mb-0"></h5>
+                    </div>
+                </button>
+            <?php else: ?>
+                <button class="btn-payment opacity-75 bg-light mt-3 w-100" onclick="mostrarAlerta('Deshabilitado', 'El pago en efectivo está pausado por seguridad.', 'warning')">
+                    <div class="d-flex align-items-center gap-3 w-100">
+                        <div class="bg-secondary bg-opacity-10 text-secondary rounded-circle d-flex justify-content-center align-items-center" style="width: 50px; height: 50px;"><i class="bi bi-cash-stack fs-4"></i></div>
+                        <div class="text-start flex-grow-1">
+                            <h6 class="fw-bold mb-0 text-secondary">Efectivo <span class="badge bg-danger ms-1" style="font-size: 9px;">DESHABILITADO</span></h6>
+                            <small class="text-muted fw-medium" style="font-size: 12px;">Pausado temporalmente por seguridad</small>
+                        </div>
+                    </div>
+                </button>
+            <?php endif; ?>
+
+            <button type="button" class="btn btn-light rounded-pill w-100 fw-bold py-3 mt-3 border shadow-sm" data-bs-dismiss="modal">CANCELAR</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalPerfil" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered mx-3 modal-dialog-scrollable">
+        <div class="modal-content border-0 p-4 text-center">
+            <div class="d-flex justify-content-end mb-2"><button type="button" class="btn-close fs-5" data-bs-dismiss="modal"></button></div>
+            <div id="p-foto" class="mx-auto mb-3" style="width:110px; height:110px; border-radius:35px; background-size:cover; background-position:center; border:4px solid var(--brand-dark); box-shadow: 0 10px 25px rgba(0,0,0,0.15);"></div>
+            <h3 id="p-nombre" class="fw-bolder mb-1 text-dark" style="font-family:'Montserrat', sans-serif;"></h3>
+            <p id="p-rubro" class="fw-bold text-muted small mb-3 text-uppercase" style="letter-spacing: 1px;"></p>
+            <div id="p-verificado" class="mb-3"></div>
+
+            <div class="bg-light p-3 rounded-4 text-start mb-3 border shadow-sm">
+                <label class="fw-bold text-dark small d-block mb-1"><i class="bi bi-shield-check text-success me-1 fs-5 align-middle"></i> Auditoría de Seguridad</label>
+                <div id="p-info-segura" class="small text-muted fw-medium" style="line-height: 1.5;"></div>
+            </div>
+
+            <div class="text-start border-top pt-3">
+                <h6 class="fw-bold text-dark mb-3"><i class="bi bi-chat-left-quote-fill text-primary me-1"></i> Opiniones de Clientes</h6>
+                <div id="p-resenas-lista" class="pe-2 hide-scrollbar" style="max-height: 180px; overflow-y: auto;">
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalCalificar" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered mx-3">
+        <div class="modal-content p-4 text-center">
+            <div class="mx-auto mb-3 bg-warning bg-opacity-10 text-warning rounded-circle d-flex align-items-center justify-content-center" style="width: 80px; height: 80px;">
+                <i class="bi bi-star-fill" style="font-size: 2.5rem;"></i>
+            </div>
+            <h3 class="fw-bolder mb-1 text-dark" style="font-family:'Montserrat', sans-serif;">Califica el servicio</h3>
+            <p class="small text-muted mb-4 fw-medium">Tu opinión ayuda a mantener la comunidad segura.</p>
+
+            <div class="d-flex justify-content-center gap-3 mb-4 text-warning" id="rating-stars" style="font-size: 3rem;">
+                <i class="bi bi-star rating-star" data-value="1" style="cursor:pointer; transition: 0.2s;"></i>
+                <i class="bi bi-star rating-star" data-value="2" style="cursor:pointer; transition: 0.2s;"></i>
+                <i class="bi bi-star rating-star" data-value="3" style="cursor:pointer; transition: 0.2s;"></i>
+                <i class="bi bi-star rating-star" data-value="4" style="cursor:pointer; transition: 0.2s;"></i>
+                <i class="bi bi-star rating-star" data-value="5" style="cursor:pointer; transition: 0.2s;"></i>
+            </div>
+
+            <input type="hidden" id="calificar_pedido_id">
+            <input type="hidden" id="calificar_estrellas" value="0">
+
+            <textarea id="calificar_comentario" class="form-control mb-4 shadow-sm" rows="3" placeholder="Deja un comentario público..."></textarea>
+            <button type="button" onclick="enviarCalificacion()" class="btn btn-primary w-100 py-3 fs-6">ENVIAR CALIFICACIÓN</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalConfirmarTrabajo" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered mx-3">
+        <div class="modal-content p-4 text-center">
+            <div class="mx-auto mb-3 bg-dark text-white rounded-circle d-flex align-items-center justify-content-center shadow-lg" style="width: 80px; height: 80px;">
+                <i class="bi bi-check-all" style="font-size: 3rem;"></i>
+            </div>
+            <h3 class="fw-bolder mb-2 text-dark" style="font-family:'Montserrat', sans-serif;">¿Trabajo Terminado?</h3>
+            <p class="text-muted small mb-4 fw-medium">El profesional indicó que finalizó. Confirma para liberar el pago correspondiente.</p>
+
+            <div class="d-grid gap-2">
+                <button type="button" class="btn btn-dark py-3 fs-6" onclick="trabajoRealizado()">SÍ, TODO CORRECTO</button>
+                <button type="button" class="btn btn-outline-danger rounded-pill fw-bold py-3 mt-2" onclick="trabajoNoRealizado()">HUBO UN PROBLEMA</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="appAlertModal" tabindex="-1" aria-hidden="true" style="z-index: 2050;">
+    <div class="modal-dialog modal-dialog-centered modal-sm mx-3">
+        <div class="modal-content p-4 text-center">
+            <div id="alertIcon" class="mb-3 mt-2"></div>
+            <h4 id="alertTitle" class="fw-bolder mb-2 text-dark" style="font-family:'Montserrat', sans-serif;"></h4>
+            <p id="alertMessage" class="text-muted small mb-4 fw-medium"></p>
+            <button type="button" class="btn btn-dark w-100 py-3 fs-6" data-bs-dismiss="modal">ENTENDIDO</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalMiPerfil" tabindex="-1"><div class="modal-dialog modal-dialog-centered mx-3"><form id="formMiPerfil" class="modal-content"><div class="modal-header border-0 pt-4 px-4"><h3 class="fw-bolder text-dark m-0" style="font-family:'Montserrat', sans-serif;">Mi Cuenta</h3><button type="button" class="btn-close fs-5" data-bs-dismiss="modal"></button></div><div class="modal-body p-4 pt-2"><div class="text-center mb-4"><div id="preview-foto-perfil" style="width:110px; height:110px; border-radius:35px; background-image:url('<?= $fotoPerfil ?>'); background-size:cover; margin: 0 auto 15px auto; border: 4px solid var(--brand-dark); box-shadow: 0 10px 20px rgba(0,0,0,0.15);"></div><label for="input-foto" class="btn btn-sm btn-light border rounded-pill fw-bold px-4 py-2 shadow-sm">Cambiar Foto</label><input type="file" id="input-foto" name="foto" class="d-none" accept="image/*" onchange="previsualizarFoto(event)"></div><label class="fw-bold small text-muted ms-1 mb-1">Nombre Completo</label><input type="text" name="nombre" class="form-control mb-3 shadow-sm" value="<?= $nombreUser ?>" required><label class="fw-bold small text-muted ms-1 mb-1">WhatsApp</label><input type="number" name="whatsapp" class="form-control mb-3 shadow-sm" value="<?= $whatsappUser ?>" required><label class="fw-bold small text-muted ms-1 mb-1">Contraseña (Opcional)</label><input type="password" name="password" class="form-control mb-4 shadow-sm" placeholder="••••••••"><button type="submit" id="btnGuardarPerfil" class="btn btn-primary w-100 py-3 fs-6">GUARDAR CAMBIOS</button></div></form></div></div>
+<div class="modal fade" id="modalHistorial" tabindex="-1"><div class="modal-dialog modal-dialog-centered modal-dialog-scrollable mx-3"><div class="modal-content"><div class="modal-header border-0 pt-4 px-4"><h3 class="fw-bolder text-dark m-0" style="font-family:'Montserrat', sans-serif;">Mis Pedidos</h3><button type="button" class="btn-close fs-5" data-bs-dismiss="modal"></button></div><div class="modal-body p-4 pt-2 bg-light" id="contenedor-historial"></div></div></div></div>
+<div class="modal fade" id="modalMisTickets" tabindex="-1"><div class="modal-dialog modal-dialog-centered modal-dialog-scrollable mx-3"><div class="modal-content"><div class="modal-header border-0 pt-4 px-4"><h3 class="fw-bolder text-dark m-0" style="font-family:'Montserrat', sans-serif;">Reclamos</h3><button type="button" class="btn-close fs-5" data-bs-dismiss="modal"></button></div><div class="modal-body p-4 pt-2 bg-light" id="contenedor-tickets"></div></div></div></div>
+<div class="modal fade" id="modalReportarProblema" tabindex="-1"><div class="modal-dialog modal-dialog-centered mx-3"><form id="formReporte" class="modal-content"><div class="modal-header border-0 pt-4 px-4"><h3 class="fw-bolder text-dark m-0" style="font-family:'Montserrat', sans-serif;">Reportar</h3><button type="button" class="btn-close fs-5" data-bs-dismiss="modal"></button></div><div class="modal-body p-4 pt-2"><p class="small text-muted mb-3 fw-medium">Detalla el inconveniente. Soporte se comunicará a la brevedad.</p><textarea id="texto_reclamo" class="form-control mb-4 py-3 shadow-sm" rows="5" placeholder="Ej: El profesional nunca llegó al domicilio..." required></textarea><button type="submit" id="btnEnviarReclamo" class="btn btn-danger w-100 py-3 fw-bold rounded-pill shadow-sm">ENVIAR REPORTE</button></div></form></div></div>
+<div class="modal fade" id="modalSoporte" tabindex="-1"><div class="modal-dialog modal-dialog-centered mx-3"><div class="modal-content"><div class="modal-header border-0 pt-4 px-4"><h3 class="fw-bolder text-dark m-0" style="font-family:'Montserrat', sans-serif;">Soporte</h3><button type="button" class="btn-close fs-5" data-bs-dismiss="modal"></button></div><div class="modal-body text-center p-4 pt-2"><div class="bg-success bg-opacity-10 rounded-circle mx-auto d-flex align-items-center justify-content-center mb-4" style="width: 90px; height: 90px;"><i class="bi bi-whatsapp text-success" style="font-size: 3rem;"></i></div><h4 class="fw-bolder text-dark">¿En qué podemos ayudarte?</h4><p class="text-muted small mb-4 mt-2">Nuestro equipo está disponible 24/7 para resolver conflictos o procesar devoluciones.</p><a href="https://wa.me/5492990000000" target="_blank" class="btn btn-dark w-100 py-3 fs-6">Contactar por WhatsApp</a></div></div></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const msg = urlParams.get('msg');
+
+    window.addEventListener('load', () => {
+        if (msg === 'pago_aprobado') {
+            mostrarAlerta('¡Pago Aprobado!', 'El dinero se acreditó exitosamente.', 'success');
+            window.history.replaceState({}, document.title, "index.php");
+        } else if (msg === 'pago_pendiente') {
+            mostrarAlerta('Pago en Proceso', 'Si elegiste PagoFácil, recordá abonar con tu ticket. Si usaste Débito, tu banco está verificando.', 'info');
+            window.history.replaceState({}, document.title, "index.php");
+        } else if (msg === 'pago_rechazado') {
+            mostrarAlerta('Pago Rechazado', 'Tu tarjeta rechazó el pago o se canceló la operación. Por favor intentá nuevamente.', 'error');
+            window.history.replaceState({}, document.title, "index.php");
+        }
+    });
+
+    const appAlertModal = new bootstrap.Modal(document.getElementById('appAlertModal'));
+    const modalPago = new bootstrap.Modal(document.getElementById('modalMetodoPago'));
+
+    function mostrarAlerta(titulo, mensaje, tipo = 'info') {
+        document.getElementById('alertTitle').innerText = titulo;
+        document.getElementById('alertMessage').innerText = mensaje;
+        const iconDiv = document.getElementById('alertIcon');
+        iconDiv.innerHTML = (tipo === 'success') ? '<div class="mx-auto bg-success bg-opacity-10 text-success rounded-circle d-flex align-items-center justify-content-center mb-3" style="width:80px; height:80px;"><i class="bi bi-check-lg" style="font-size: 3rem;"></i></div>' :
+                          (tipo === 'error') ? '<div class="mx-auto bg-danger bg-opacity-10 text-danger rounded-circle d-flex align-items-center justify-content-center mb-3" style="width:80px; height:80px;"><i class="bi bi-x-lg" style="font-size: 3rem;"></i></div>' :
+                          (tipo === 'warning') ? '<div class="mx-auto bg-warning bg-opacity-10 text-warning rounded-circle d-flex align-items-center justify-content-center mb-3" style="width:80px; height:80px;"><i class="bi bi-exclamation-triangle" style="font-size: 3rem;"></i></div>' :
+                          '<div class="mx-auto bg-dark bg-opacity-10 text-dark rounded-circle d-flex align-items-center justify-content-center mb-3" style="width:80px; height:80px;"><i class="bi bi-info-lg" style="font-size: 3rem;"></i></div>';
+        appAlertModal.show();
+    }
+
+    // ======================================================================
+    // ⚙️ MOTOR NATIVO DE NOTIFICACIONES PUSH (CAPACITOR + FIREBASE)
+    // ======================================================================
+    async function inicializarNotificacionesNativas() {
+        if (window.Capacitor && window.Capacitor.isNativePlatform()) {
+            const { PushNotifications } = Capacitor.Plugins;
+
+            try {
+                // 1. Pedir permisos a Android
+                let permisos = await PushNotifications.requestPermissions();
+                if (permisos.receive === 'granted') {
+                    await PushNotifications.register();
+                }
+
+                // 2. Atrapar el Token y guardarlo silenciosamente (ID Dinámico)
+                PushNotifications.addListener('registration', (token) => {
+                    let tokenFCM = token.value;
+                    let inputId = document.getElementById('id_usuario_logueado');
+                    let id_usuario = inputId ? inputId.value : null;
+
+                    if (id_usuario) {
+                        let formData = new FormData();
+                        formData.append('id_usuario', id_usuario);
+                        formData.append('token_push', tokenFCM);
+
+                        fetch('https://naphdev.online/app/guardar_token_nativo.php', {
+                            method: 'POST',
+                            body: formData
+                        }).catch(err => console.error("Error red nativa:", err));
+                    }
+                });
+
+                // 3. MAGIA CUANDO LA APP ESTÁ ABIERTA (Primer plano)
+                PushNotifications.addListener('pushNotificationReceived', (notification) => {
+                    // Hacer sonar el ruidito web
+                    document.getElementById('notif-sound').play().catch(()=>{});
+                    
+                    // Hacer vibrar el celular
+                    if(navigator.vibrate) navigator.vibrate([200, 100, 400]);
+                    
+                    // Mostrar el cartel en el medio de la pantalla
+                    mostrarAlerta(
+                        notification.title || "¡Nuevo Aviso!",
+                        notification.body || "Revisá tus pedidos.",
+                        "success"
+                    );
+                });
+
+            } catch (e) {
+                console.error("Error iniciando notificaciones:", e);
+            }
+        }
+    }
+
+    // Ejecutar la función apenas carga la vista
+    document.addEventListener('DOMContentLoaded', () => {
+        inicializarNotificacionesNativas();
+    });
+    // ======================================================================
+
+
+    function previsualizarFoto(event) {
+        const reader = new FileReader();
+        reader.onload = function() { document.getElementById('preview-foto-perfil').style.backgroundImage = `url('${reader.result}')`; }
+        if(event.target.files[0]) reader.readAsDataURL(event.target.files[0]);
+    }
+
+    const VAPID_PUBLIC_KEY = 'BCPViW8UzJiqTcVXlBE4XUDgWDCIwCZw8IHCmdC7Jz5DPgVu_jKim-mWSUTR2bzqI0syErQyahlojf8RfpzqRKE';
+
+    if ('serviceWorker' in navigator) { window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js'); }); }
+
+    function urlBase64ToUint8Array(base64String) {
+        const padding = '='.repeat((4 - base64String.length % 4) % 4);
+        const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+        const rawData = window.atob(base64); const outputArray = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) { outputArray[i] = rawData.charCodeAt(i); } return outputArray;
+    }
+
+    function solicitarPermisosPush() {
+        if (!('serviceWorker' in navigator) || !('PushManager' in window)) return mostrarAlerta('Aviso', 'Tu dispositivo no soporta notificaciones push.', 'warning');
+        Notification.requestPermission().then(p => { if (p === 'granted') suscribirUsuario(); else mostrarAlerta('Alerta', 'No diste permiso para recibir notificaciones.', 'warning'); });
+    }
+
+    function suscribirUsuario() {
+        navigator.serviceWorker.ready.then(reg => reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) }))
+        .then(sub => {
+            const payload = JSON.parse(JSON.stringify(sub)); payload.user_id_fallback = <?php echo json_encode($id_cliente); ?>;
+            fetch('guardar_suscripcion.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+            .then(r => r.json()).then(data => { if (data.status === 'success') { document.getElementById('btn-notificaciones').classList.add('active-alert'); mostrarAlerta('¡Suscrito!', 'Recibirás alertas de tus servicios.', 'success'); }});
+        });
+    }
+
+    let filtroRubro = 'Todos';
+
+    function filtrarRubro(rubro, element) {
+        filtroRubro = rubro;
+        document.querySelectorAll('.cat-item').forEach(el => el.classList.remove('active'));
+        element.classList.add('active');
+
+        const selectModal = document.getElementById('sol_rubro');
+        const btnTexto = document.getElementById('btn-pedir-texto');
+
+        if (rubro !== 'Todos') {
+            btnTexto.innerText = `PEDIR ${rubro.toUpperCase()}`;
+            if (selectModal) selectModal.value = rubro;
+        } else {
+            btnTexto.innerText = `BUSCAR PROFESIONALES`;
+        }
+        if (miLat && miLng) cargarDatos(miLat, miLng);
+    }
+
+    const map = L.map('mapa', { zoomControl: false, attributionControl: false }).setView([-38.9392, -67.9892], 14);
+    let capaMapaActual = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png').addTo(map);
+
+    let marcadores = [], miMarker = null, miLat = null, miLng = null;
+
+// Variable global para guardar el ID del rastreador nativo por si alguna vez querés frenarlo
+let watchIdNativo = null;
+
+async function iniciarGPS() {
+    // 1. MODO APP NATIVA (APK)
+    if (window.Capacitor && window.Capacitor.isNativePlatform()) {
+        const { Geolocation } = Capacitor.Plugins;
+
+        try {
+            // Validamos permisos con Android
+            const permisos = await Geolocation.requestPermissions();
+
+            if (permisos.location === 'granted' || permisos.coarseLocation === 'granted') {
+                // Usamos el watchPosition de Capacitor para rastreo continuo
+                watchIdNativo = await Geolocation.watchPosition(
+                    { enableHighAccuracy: true, timeout: 10000 },
+                    (pos, err) => {
+                        if (err) {
+                            console.error("Error en GPS Nativo:", err);
+                            return; // Ignoramos timeouts menores y seguimos escuchando
+                        }
+
+                        if (pos) {
+                            miLat = pos.coords.latitude;
+                            miLng = pos.coords.longitude;
+
+                            // Lógica intacta de tu mapa Leaflet
+                            if (!miMarker) {
+                                miMarker = L.marker([miLat, miLng], {
+                                    icon: L.divIcon({html:'<div class="gps-pulse"></div>', className:''})
+                                }).addTo(map);
+                                map.setView([miLat, miLng], 15);
+                            } else {
+                                miMarker.setLatLng([miLat, miLng]);
+                            }
+
+                            // Cargamos la data
+                            cargarDatos(miLat, miLng);
+                            cargarMisPedidos();
+                        }
+                    }
+                );
+            } else {
+                mostrarAlerta('Ubicación Bloqueada', 'Activa los permisos de GPS desde la configuración de Android.', 'warning');
+            }
+        } catch (e) {
+            console.error("Error iniciando GPS Nativo:", e);
+        }
+
+    } else {
+        // 2. MODO WEB CLÁSICO (El código que ya tenías)
+        if (!navigator.geolocation) return mostrarAlerta('Aviso', 'Tu dispositivo no soporta ubicación GPS.', 'warning');
+
+        navigator.geolocation.watchPosition(pos => {
+            miLat = pos.coords.latitude; miLng = pos.coords.longitude;
+
+            if (!miMarker) {
+                miMarker = L.marker([miLat, miLng], { icon: L.divIcon({html:'<div class="gps-pulse"></div>', className:''}) }).addTo(map);
+                map.setView([miLat, miLng], 15);
+            } else {
+                miMarker.setLatLng([miLat, miLng]);
+            }
+
+            cargarDatos(miLat, miLng);
+            cargarMisPedidos();
+
+        }, e => {
+            if(e.code === 1) mostrarAlerta('Ubicación Bloqueada', 'Activa el GPS para poder encontrar profesionales.', 'warning');
+            if(e.code === 3) setTimeout(iniciarGPS, 3000); // Reintento por timeout
+        }, { enableHighAccuracy: true, timeout: 10000 });
+    }
+}
+    function cargarDatos(lat, lng) {
+        fetch(`buscar_cercanos.php?lat=${lat}&lng=${lng}`).then(r => r.json()).then(data => {
+            marcadores.forEach(m => map.removeLayer(m)); marcadores = [];
+
+            let dataFiltrada = data;
+            if (filtroRubro !== 'Todos') { dataFiltrada = data.filter(item => item.rubro === filtroRubro); }
+
+            dataFiltrada.forEach(item => {
+                let foto = item.foto ? (item.foto.startsWith('http') ? item.foto : `uploads/${item.foto}`) : 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
+                let verif = Number(item.verificado) === 1;
+
+                let iconHtml = `
+                    <div class="pro-marker-container">
+                        <div class="pro-pulse"></div>
+                        <div class="pro-avatar" style="background-image:url('${foto}')"></div>
+                        <div class="pro-online-dot"></div>
+                        ${verif ? '<div class="pro-shield"><i class="bi bi-shield-check"></i></div>' : ''}
+                    </div>
+                `;
+
+                let m = L.marker([item.latitud, item.longitud], { icon: L.divIcon({ html: iconHtml, iconSize: [50, 50], className: '' }) }).addTo(map);
+                m.on('click', () => { verSeguridad(item.id || item.profesional_id, item.nombre, item.rubro, foto, item.verificado); });
+                marcadores.push(m);
+            });
+        });
+    }
+
+    let preciosCalculados = {};
+
+    function iniciarPago(pedidoId, precioBase, profesionalId = null, cotizacionId = null, isExtra = false) {
+        if (!precioBase || precioBase === 'undefined' || precioBase === 'null') return mostrarAlerta("Error", "No se pudo recuperar el precio.", "error");
+
+        document.getElementById('pago_pedido_id').value = pedidoId;
+        if (!document.getElementById('pago_profesional_id')) {
+            document.body.insertAdjacentHTML('beforeend', `<input type="hidden" id="pago_profesional_id"><input type="hidden" id="pago_cotizacion_id">`);
+        }
+        document.getElementById('pago_profesional_id').value = profesionalId;
+        document.getElementById('pago_cotizacion_id').value = cotizacionId;
+
+        let pBase = parseFloat(precioBase) || 0;
+
+        // Si ES un trabajo extra, no le sumamos el 15%.
+        let precioMP = isExtra ? pBase : pBase * 1.15;
+
+        preciosCalculados = { 'base': pBase, 'efectivo': pBase, 'mercadopago': precioMP };
+        const fmt = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits:0 });
+        if(document.getElementById('lbl_precio_mp')) document.getElementById('lbl_precio_mp').innerText = fmt.format(preciosCalculados.mercadopago);
+        if(document.getElementById('lbl_precio_efectivo')) document.getElementById('lbl_precio_efectivo').innerText = fmt.format(preciosCalculados.efectivo);
+
+        // Adaptamos el título del modal
+        document.getElementById('titulo-modal-pago').innerText = isExtra ? "Pago de Trabajo" : "Pago de Visita";
+        let alertaPago = document.getElementById('alerta-pago');
+        if (isExtra) {
+            alertaPago.innerHTML = `<i class="bi bi-shield-check text-success me-1"></i> <strong>Pago Seguro:</strong> Estás abonando el costo del trabajo/materiales reportado por el profesional.`;
+            alertaPago.className = "alert alert-success py-2 px-3 mt-2 mb-0 rounded-3 border-success text-start shadow-sm";
+        } else {
+            alertaPago.innerHTML = `<i class="bi bi-exclamation-triangle-fill text-warning me-1"></i> <strong>Importante:</strong> Estás abonando <u>solamente el costo de la visita</u>.`;
+            alertaPago.className = "alert alert-warning py-2 px-3 mt-2 mb-0 rounded-3 border-warning text-start shadow-sm";
+        }
+
+        modalPago.show();
+    }
+
+    function ejecutarPago(metodo) {
+        const pedidoId = document.getElementById('pago_pedido_id').value;
+        const montoFinal = preciosCalculados[metodo];
+        const proId = document.getElementById('pago_profesional_id') ? document.getElementById('pago_profesional_id').value : '';
+        const cotizId = document.getElementById('pago_cotizacion_id') ? document.getElementById('pago_cotizacion_id').value : '';
+        const precioPro = preciosCalculados['base'];
+
+        if (metodo === 'efectivo') {
+            Swal.fire({ title: 'Confirmando...', text: 'Enviando confirmación...', icon: 'info', showConfirmButton: false, allowOutsideClick: false });
+
+            const fdEf = new URLSearchParams();
+            fdEf.append('pedido_id', pedidoId); fdEf.append('precio_pro', precioPro); fdEf.append('profesional_id', proId);
+
+            fetch('procesar_pago_efectivo.php', { method: 'POST', body: fdEf }).then(r => r.json()).then(res => {
+                if(res.success) {
+                    Swal.close();
+                    bootstrap.Modal.getInstance(document.getElementById('modalMetodoPago')).hide();
+                    mostrarAlerta("¡Confirmado!", "Elegiste pagar en efectivo. Asegurate de pedir el comprobante al profesional.", "success");
+                    cargarMisPedidos();
+                } else { mostrarAlerta("Error", "No se pudo confirmar el pago.", "error"); }
+            }).catch(() => { mostrarAlerta("Error", "Problema de red.", "error"); });
+        }
+        else if (metodo === 'mercadopago') {
+            Swal.fire({ title: 'Conectando...', text: 'Abriendo pasarela...', icon: 'info', showConfirmButton: false, allowOutsideClick: false });
+            const fdMP = new URLSearchParams();
+            fdMP.append('pedido_id', pedidoId); fdMP.append('monto_final', montoFinal); fdMP.append('precio_pro', precioPro); fdMP.append('profesional_id', proId); fdMP.append('cotizacion_id', cotizId);
+
+            fetch('generar_pago_mp.php', { method: 'POST', body: fdMP }).then(r => r.json()).then(res => {
+                if(res.success) { Swal.close(); window.location.href = res.url_pago; }
+                else { mostrarAlerta("Error", "Error al generar el link de pago.", "error"); }
+            }).catch(() => { mostrarAlerta("Error", "Problema de red. Intentá de nuevo.", "error"); });
+        }
+    }
+
+    let pedidosProcesadosParaCalificar = [];
+    let ultimoContenidoPedidos = "";
+    let conteoCotizacionesPrevias = {};
+
+    function cargarMisPedidos() {
+        fetch('obtener_mis_pedidos.php?t=' + new Date().getTime())
+        .then(r => r.json())
+        .then(pedidos => {
+            const container = document.getElementById('mis-pedidos-container');
+            const mainUI = document.getElementById('main-request-ui');
+
+            if (!pedidos || pedidos.length === 0) {
+                if (ultimoContenidoPedidos !== "") {
+                    container.innerHTML = "";
+                    if (mainUI) mainUI.style.display = 'block';
+                    ultimoContenidoPedidos = "";
+                }
+                return;
+            }
+
+            const pedidosActivos = pedidos.filter(p => p.estado === 'pendiente' || p.estado === 'en_curso' || p.estado === 'pendiente_pago');
+
+            if (pedidosActivos.length > 0) {
+                if (mainUI && mainUI.style.display !== 'none') mainUI.style.display = 'none';
+            } else {
+                if (mainUI && mainUI.style.display !== 'block') mainUI.style.display = 'block';
+            }
+
+            let nuevoHTML = pedidosActivos.map(p => {
+                let rubro = p.rubro_solicitado || p.rubro || 'Servicio';
+
+                // Detectamos si es un cobro extra
+                let isExtra = rubro && rubro.includes('Trabajo Final');
+
+                if(p.estado === 'pendiente') {
+                    if (!p.cotizaciones || p.cotizaciones.length === 0) {
+                        return `
+                        <div class="floating-bottom-card text-center border-top border-dark border-4 bg-white shadow" style="margin-bottom: 10px;">
+                            <div class="spinner-grow text-dark spinner-grow-sm mb-3" role="status"></div>
+                            <h4 class="fw-bolder text-dark mb-1" style="font-family:'Montserrat', sans-serif;">Buscando ${rubro}...</h4>
+                            <p class="small text-muted mb-4 fw-medium">Conectando con profesionales cercanos</p>
+                            <button type="button" class="btn btn-light border rounded-pill px-4 fw-bold w-100 py-3 shadow-sm" onclick="finalizarPedido(${p.id})">Cancelar búsqueda</button>
+                        </div>`;
+                    } else {
+                        if (!conteoCotizacionesPrevias[p.id]) conteoCotizacionesPrevias[p.id] = 0;
+                        if (p.cotizaciones.length > conteoCotizacionesPrevias[p.id]) {
+                            document.getElementById('notif-sound').play().catch(()=>{});
+                            if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
+                            conteoCotizacionesPrevias[p.id] = p.cotizaciones.length;
+                        }
+
+                        let htmlCotizaciones = `<div class="mb-3 text-center"><span class="badge bg-dark px-3 py-2 fs-6 rounded-pill shadow-sm">¡${p.cotizaciones.length} Ofertas de Visita!</span></div>`;
+
+                        p.cotizaciones.forEach(cotiz => {
+                            let fotoPro = cotiz.foto ? (cotiz.foto.startsWith('http') ? cotiz.foto : `uploads/${cotiz.foto}`) : 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
+                            let precioFmt = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits:0 }).format(cotiz.precio_oferta);
+                            let estrellas = cotiz.estrellas > 0 ? `<i class="bi bi-star-fill text-warning"></i> ${parseFloat(cotiz.estrellas).toFixed(1)}` : 'Nuevo';
+
+                            htmlCotizaciones += `
+                            <div class="bg-white p-3 mb-3 rounded-4 border shadow-sm">
+                                <div class="d-flex justify-content-between align-items-center mb-2 border-bottom pb-2">
+                                    <div class="d-flex align-items-center">
+                                        <div style="width:55px;height:55px;border-radius:18px;background-image:url('${fotoPro}');background-size:cover;margin-right:12px; border:1px solid #eee;"></div>
+                                        <div style="line-height: 1.2;">
+                                            <span class="fw-bolder d-block text-truncate text-dark" style="max-width: 140px; font-size: 15px;">${cotiz.nombre}</span>
+                                            <span class="small text-muted fw-bold">${estrellas}</span>
+                                        </div>
+                                    </div>
+                                    <div class="text-end">
+                                        <span class="fw-bolder text-success fs-3 d-block">${precioFmt}</span>
+                                        <span class="small text-muted fw-bold" style="font-size: 10px;">Costo por Visita</span>
+                                    </div>
+                                </div>
+                                <div class="d-flex gap-2 mt-3">
+                                    <button class="btn btn-light border text-muted fw-bold rounded-pill w-50 py-2" onclick="verSeguridad(${cotiz.profesional_id}, '${cotiz.nombre}', '${rubro}', '${fotoPro}', ${cotiz.verificado})">Perfil</button>
+                                    <button class="btn btn-dark fw-bold rounded-pill shadow-sm w-50 py-2" onclick="iniciarPago(${p.id}, '${cotiz.precio_oferta}', ${cotiz.profesional_id}, ${cotiz.cotizacion_id}, false)">ACEPTAR</button>
+                                </div>
+                            </div>`;
+                        });
+
+                        return `
+                        <div class="floating-bottom-card bg-white shadow" style="max-height: 65vh; overflow-y: auto; margin-bottom: 10px;">
+                            <div class="d-flex justify-content-end mb-2"><button type="button" class="btn btn-sm btn-light border rounded-pill text-danger fw-bold py-2 px-3" onclick="finalizarPedido(${p.id})">Cancelar</button></div>
+                            ${htmlCotizaciones}
+                        </div>`;
+                    }
+                }
+                else if (p.estado === 'en_curso') {
+                    let fotoPro = p.foto_pro ? (p.foto_pro.startsWith('http') ? p.foto_pro : `uploads/${p.foto_pro}`) : 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
+
+                    let textEnCamino = isExtra ? "Trabajo en ejecución" : "El profesional está en camino";
+                    let infoExtra = "";
+                    if (p.transaccion_cliente && p.transaccion_cliente.includes('_PENDING')) {
+                        textEnCamino = "Pago Pendiente / En Revisión";
+                        infoExtra = "<div class='alert alert-warning small py-2 px-3 rounded-3 mb-3 fw-bold border-warning'><i class='bi bi-hourglass-split me-1'></i> Revisando acreditación del pago...</div>";
+                    }
+
+                    return `
+                    <div class="floating-bottom-card border-top border-dark border-4 bg-white shadow" style="margin-bottom: 10px;">
+                        <div class="text-center mb-3">
+                            <span class="badge bg-dark text-white px-4 py-2 rounded-pill shadow-sm fs-6">${textEnCamino}</span>
+                        </div>
+                        ${infoExtra}
+                        <div class="d-flex align-items-center mb-4 bg-light p-3 rounded-4 border shadow-sm">
+                            <div style="width:65px;height:65px;border-radius:50%;background-image:url('${fotoPro}');background-size:cover;margin-right:15px; border: 3px solid var(--brand-dark);"></div>
+                            <div>
+                                <h4 class="fw-bolder mb-0 text-dark" style="font-family:'Montserrat',sans-serif;">${p.nombre_pro || 'Profesional'}</h4>
+                                <div class="small fw-bold text-muted text-uppercase" style="letter-spacing:1px;">${rubro}</div>
+                            </div>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <a href="https://wa.me/${p.whatsapp_pro}" target="_blank" class="btn btn-light border fw-bold w-50 rounded-pill py-3 shadow-sm"><i class="bi bi-chat-dots-fill text-dark fs-5 align-middle"></i> Mensaje</a>
+                            <button type="button" class="btn btn-dark fw-bold w-50 rounded-pill py-3 shadow-sm" onclick="finalizarPedido(${p.id})">Terminado</button>
+                        </div>
+                    </div>`;
+                }
+                else if (p.estado === 'pendiente_pago') {
+                    let fotoPro = p.foto_pro ? (p.foto_pro.startsWith('http') ? p.foto_pro : `uploads/${p.foto_pro}`) : 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
+                    let precio = p.precio || p.precio_oferta || 0;
+
+                    let textoCartel = isExtra ? "Pago de Trabajo Requerido" : "Pago de Visita Requerido";
+                    let textoBotonPago = isExtra ? "Pagar Trabajo" : "Pagar Visita";
+
+                    return `
+                    <div class="floating-bottom-card border-top border-danger border-4 bg-white shadow" style="margin-bottom: 10px;">
+                        <div class="text-center mb-3"><span class="badge bg-danger text-white px-4 py-2 rounded-pill shadow-sm fs-6">${textoCartel}</span></div>
+                        <div class="d-flex align-items-center mb-4 bg-light p-3 rounded-4 border shadow-sm">
+                            <div style="width:65px;height:65px;border-radius:50%;background-image:url('${fotoPro}');background-size:cover;margin-right:15px; border: 3px solid var(--brand-dark);"></div>
+                            <div>
+                                <h4 class="fw-bolder mb-0 text-dark" style="font-family:'Montserrat',sans-serif;">${p.nombre_pro || 'Profesional'}</h4>
+                                <div class="small fw-bold text-muted text-uppercase">${rubro}</div>
+                            </div>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-light border fw-bold w-50 rounded-pill py-3 text-danger" onclick="finalizarPedido(${p.id})">Cancelar</button>
+                            <button type="button" class="btn btn-dark fw-bold w-50 rounded-pill py-3" onclick="iniciarPago(${p.id}, '${precio}', ${p.profesional_id}, ${p.cotizacion_id}, ${isExtra})">${textoBotonPago}</button>
+                        </div>
+                    </div>`;
+                }
+                return "";
+            }).join('');
+
+            if (nuevoHTML !== ultimoContenidoPedidos) {
+                container.innerHTML = nuevoHTML;
+                ultimoContenidoPedidos = nuevoHTML;
+            }
+
+            pedidos.forEach(p => {
+                if (p.estado === 'finalizado' && !pedidosProcesadosParaCalificar.includes(p.id)) {
+                    pedidosProcesadosParaCalificar.push(p.id);
+                    abrirConfirmacionTrabajo(p.id);
+                }
+            });
+        });
+    }
+
+    function verSeguridad(pro_id, n, r, f, v) {
+        document.getElementById('p-nombre').innerText = n;
+        document.getElementById('p-rubro').innerText = r;
+        document.getElementById('p-foto').style.backgroundImage = `url('${f}')`;
+
+        const badge = document.getElementById('p-verificado');
+        const info = document.getElementById('p-info-segura');
+
+        if(Number(v) === 1) {
+            badge.innerHTML = '<span class="badge bg-dark px-4 py-2 rounded-pill shadow-sm"><i class="bi bi-shield-fill-check text-success"></i> PROFESIONAL VERIFICADO</span>';
+            info.innerHTML = "Identidad validada, el profesional no cuenta con antecedentes penales.";
+        } else {
+            badge.innerHTML = '<span class="badge bg-secondary px-4 py-2 rounded-pill shadow-sm"><i class="bi bi-exclamation-triangle-fill text-warning"></i> NO VERIFICADO</span>';            info.innerHTML = "El usuario no ha validado su identidad ni antecedentes. Toma precauciones con el ingreso al hogar.";
+        }
+
+        const resenasLista = document.getElementById('p-resenas-lista');
+        resenasLista.innerHTML = '<div class="text-center text-muted small py-3"><div class="spinner-border spinner-border-sm text-primary mb-2"></div><br>Cargando opiniones...</div>';
+
+        new bootstrap.Modal(document.getElementById('modalPerfil')).show();
+
+        fetch(`obtener_resenas.php?pro_id=${pro_id}`)
+        .then(res => res.json())
+        .then(data => {
+            if(!data || data.length === 0) {
+                resenasLista.innerHTML = '<div class="text-center text-muted small py-3 bg-light rounded-3 fst-italic">Aún no tiene opiniones escritas.</div>';
+            } else {
+                resenasLista.innerHTML = data.map(resena => {
+                    let estrellasHtml = '<i class="bi bi-star-fill text-warning"></i>'.repeat(resena.estrellas) + '<i class="bi bi-star text-warning"></i>'.repeat(5 - resena.estrellas);
+                    let nombreCorto = resena.cliente_nombre ? resena.cliente_nombre.split(' ')[0] : 'Cliente';
+                    return `
+                    <div class="mb-3 pb-3 border-bottom">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <span class="small fw-bold text-dark"><i class="bi bi-person-circle text-secondary me-1"></i> ${nombreCorto}</span>
+                            <span class="small">${estrellasHtml}</span>
+                        </div>
+                        <p class="small text-muted mb-0 fst-italic" style="line-height: 1.4;">"${resena.comentario}"</p>
+                    </div>`;
+                }).join('');
+            }
+        }).catch(() => { resenasLista.innerHTML = '<div class="text-center text-danger small py-2">Error al cargar las opiniones.</div>'; });
+    }
+
+    let pedidoAConfirmar = null;
+
+    function abrirConfirmacionTrabajo(id) {
+        pedidoAConfirmar = id;
+        new bootstrap.Modal(document.getElementById('modalConfirmarTrabajo')).show();
+        document.getElementById('notif-sound').play();
+    }
+
+    function trabajoRealizado() {
+        Swal.fire({ title: 'Finalizando...', text: 'Liberando pago al profesional', allowOutsideClick: false, didOpen: () => { Swal.showLoading(); } });
+        const fd = new URLSearchParams(); fd.append('pedido_id', pedidoAConfirmar);
+        fetch('procesar_finalizacion.php', { method: 'POST', body: fd }).then(r => r.json()).then(res => {
+            Swal.close();
+            if(res.success) {
+                bootstrap.Modal.getInstance(document.getElementById('modalConfirmarTrabajo')).hide();
+                document.getElementById('calificar_pedido_id').value = pedidoAConfirmar;
+                new bootstrap.Modal(document.getElementById('modalCalificar')).show();
+            } else { mostrarAlerta("Error", "No se pudo finalizar el pago.", "error"); }
+        });
+    }
+
+    function trabajoNoRealizado() {
+        bootstrap.Modal.getInstance(document.getElementById('modalConfirmarTrabajo')).hide();
+        const fd = new URLSearchParams(); fd.append('pedido_id', pedidoAConfirmar);
+        fetch('reportar_problema.php', { method: 'POST', body: fd }).then(r => r.json()).then(res => {
+            if (res.success) { mostrarAlerta("Reporte Enviado", "Hemos pausado el pago.", "warning"); cargarMisPedidos(); }
+        });
+    }
+
+    function enviarCalificacion() {
+        const id = document.getElementById('calificar_pedido_id').value;
+        const est = document.getElementById('calificar_estrellas').value;
+        if(est == 0) { mostrarAlerta("Atención", "Por favor seleccioná las estrellas.", "warning"); return; }
+        const fd = new URLSearchParams(); fd.append('pedido_id', id); fd.append('estrellas', est); fd.append('comentario', document.getElementById('calificar_comentario').value);
+        fetch('guardar_resena.php', { method: 'POST', body: fd }).then(r => r.json()).then(res => {
+            if(res.success) {
+                bootstrap.Modal.getInstance(document.getElementById('modalCalificar')).hide();
+                mostrarAlerta("¡Gracias!", "Tu calificación ayuda a mejorar la comunidad.", "success");
+                cargarMisPedidos();
+            }
+        });
+    }
+
+    document.querySelectorAll('.rating-star').forEach(star => {
+        star.addEventListener('click', function() {
+            const val = this.getAttribute('data-value');
+            document.getElementById('calificar_estrellas').value = val;
+            document.querySelectorAll('.rating-star').forEach(s => {
+                s.classList.toggle('bi-star-fill', s.getAttribute('data-value') <= val);
+                s.classList.toggle('bi-star', s.getAttribute('data-value') > val);
+            });
+        });
+    });
+
+    function finalizarPedido(id) {
+        fetch('obtener_detalle_pedido.php?id=' + id).then(r => r.json()).then(pedido => {
+            if (pedido.estado === 'en_curso') { abrirConfirmacionTrabajo(id); }
+            else {
+                Swal.fire({ title: '¿Cancelar solicitud?', text: "Los profesionales ya no verán tu pedido.", icon: 'warning', showCancelButton: true, confirmButtonColor: '#121212', confirmButtonText: 'Sí, cancelar', cancelButtonText: 'No', customClass: { popup: 'rounded-4', confirmButton: 'rounded-pill', cancelButton: 'rounded-pill' } }).then(result => {
+                    if (result.isConfirmed) { fetch('eliminar_pedido.php?id=' + id).then(() => { cargarMisPedidos(); cargarDatos(miLat, miLng); }); }
+                });
+            }
+        }).catch(() => {
+             Swal.fire({ title: '¿Cancelar solicitud?', icon: 'warning', showCancelButton: true, confirmButtonColor: '#121212', confirmButtonText: 'Sí, cancelar', customClass: { popup: 'rounded-4', confirmButton: 'rounded-pill' } }).then(result => {
+                if (result.isConfirmed) { fetch('eliminar_pedido.php?id=' + id).then(() => { cargarMisPedidos(); }); }
+            });
+        });
+    }
+
+    document.getElementById('formSolicitud')?.addEventListener('submit', function(e) {
+        e.preventDefault();
+        if(!miLat || !miLng) { mostrarAlerta("Ubicando...", "Buscando GPS. Esperá un segundo.", "info"); return; }
+        const btn = document.getElementById('btnEnviar'); btn.disabled = true; btn.innerText = "PROCESANDO...";
+        const fd = new URLSearchParams();
+        fd.append('lat', miLat); fd.append('lng', miLng); fd.append('nombre', document.getElementById('sol_nombre').value);
+        fd.append('whatsapp', document.getElementById('sol_whatsapp').value); fd.append('rubro_solicitado', document.getElementById('sol_rubro').value);
+        fd.append('problema', document.getElementById('sol_problema').value);
+        fetch('guardar_solicitud.php', { method: 'POST', body: fd }).then(r => r.json()).then(res => {
+            btn.disabled = false; btn.innerText = 'SOLICITAR AHORA';
+            if(res.status === 'success' || res.success) {
+                bootstrap.Modal.getInstance(document.getElementById('modalAyuda')).hide();                document.getElementById('sol_problema').value = ""; conteoCotizacionesPrevias = {};
+                cargarMisPedidos(); cargarDatos(miLat, miLng);
+            } else { mostrarAlerta("Atención", res.message || "Faltan datos obligatorios.", "warning"); }
+        }).catch(() => { btn.disabled = false; btn.innerText = 'SOLICITAR AHORA'; });
+    });
+
+    document.getElementById('formMiPerfil')?.addEventListener('submit', function(e) {
+        e.preventDefault();
+        const btn = document.getElementById('btnGuardarPerfil'); btn.disabled = true; btn.innerText = "GUARDANDO...";
+        fetch('actualizar_perfil_cliente.php', { method: 'POST', body: new FormData(this) }).then(r => r.json()).then(res => {
+            if(res.success) { location.reload(); } else { mostrarAlerta("Error", res.message, "error"); btn.disabled = false; }
+        });
+    });
+
+    document.getElementById('formReporte')?.addEventListener('submit', function(e) {
+        e.preventDefault();
+        const btn = document.getElementById('btnEnviarReclamo'); const texto = document.getElementById('texto_reclamo').value;
+        btn.disabled = true; btn.innerText = "ENVIANDO...";
+        const nroTicket = 'RCL-' + Math.floor(1000 + Math.random() * 9000);
+        const fd = new URLSearchParams(); fd.append('ticket', nroTicket); fd.append('detalle', texto);
+        fetch('guardar_reclamo.php', { method: 'POST', body: fd }).then(r => r.json()).then(res => {
+            btn.disabled = false; btn.innerText = "ENVIAR REPORTE";
+            bootstrap.Modal.getInstance(document.getElementById('modalReportarProblema')).hide();
+            document.getElementById('texto_reclamo').value = '';
+            if(res.success) {
+                mostrarAlerta("Ticket Creado", `Reclamo: ${nroTicket}.`, "success");
+                window.open(`https://wa.me/5492990000000?text=${encodeURIComponent(`🚨 *RECLAMO*\n*Ticket:* ${nroTicket}\n*Detalle:* ${texto}`)}`, '_blank');
+            }
+        });
+    });
+
+    function cargarTickets() {
+        const cont = document.getElementById('contenedor-tickets'); cont.innerHTML = `<div class="text-center py-5"><div class="spinner-border text-dark"></div></div>`;
+        fetch('obtener_tickets.php').then(r => r.json()).then(data => {
+            if (!Array.isArray(data) || data.length === 0) { cont.innerHTML = `<div class="text-center py-5 text-muted"><i class="bi bi-inbox fs-1 opacity-50"></i><p class="mt-2 fw-medium">No hay reclamos activos.</p></div>`; return; }
+            cont.innerHTML = data.map(t => `<div class="p-4 mb-3 bg-white shadow-sm border rounded-4"><div class="d-flex justify-content-between mb-3"><span class="fw-bold text-dark fs-5"><i class="bi bi-hash text-dark"></i>${t.nro_ticket}</span><span class="badge bg-secondary border">${t.estado.toUpperCase()}</span></div><p class="small text-muted mb-3">${t.detalle}</p><div class="text-end border-top pt-3"><small class="text-muted fw-bold"><i class="bi bi-calendar3 me-1"></i> ${t.fecha_fmt}</small></div></div>`).join('');
+        }).catch(() => { cont.innerHTML = `<div class="text-center py-5 text-muted"><i class="bi bi-inbox fs-1 opacity-50"></i><p class="mt-2 fw-medium">No hay reclamos activos.</p></div>`; });
+    }
+
+    function cargarHistorial() {
+        const cont = document.getElementById('contenedor-historial'); cont.innerHTML = `<div class="text-center py-5"><div class="spinner-border text-dark"></div></div>`;
+        fetch('obtener_historial.php').then(r => r.json()).then(data => {
+            if (!Array.isArray(data) || data.length === 0) { cont.innerHTML = `<div class="text-center text-muted py-5"><i class="bi bi-clock-history fs-1 opacity-50"></i><p class="mt-2 fw-medium">Sin historial.</p></div>`; return; }
+            cont.innerHTML = data.map(p => `<div class="p-4 mb-3 bg-white shadow-sm border rounded-4"><div class="d-flex justify-content-between mb-3"><span class="badge bg-dark px-3 py-1 rounded-pill">COMPLETADO</span><small class="text-muted fw-bold">${p.fecha || 'Reciente'}</small></div><h5 class="fw-bolder mb-1 text-dark" style="font-family:'Montserrat', sans-serif;">${p.rubro || 'Servicio'}</h5><p class="small text-muted mb-3 text-truncate">${p.problema}</p><div class="border-top pt-3"><span class="fw-bold text-dark small"><i class="bi bi-person-check-fill text-dark me-1"></i> ${p.profesional_nombre || 'Profesional'}</span></div></div>`).join('');
+        }).catch(() => { cont.innerHTML = `<div class="text-center text-muted py-5"><i class="bi bi-clock-history fs-1 opacity-50"></i><p class="mt-2 fw-medium">Sin historial.</p></div>`; });
+    }
+
+    iniciarGPS();
+    setInterval(() => { if(miLat && miLng) { cargarDatos(miLat, miLng); cargarMisPedidos(); } }, 10000);
+
+</script>
+</body>
+</html>
